@@ -20,3 +20,20 @@
   * timer_interrupt() located on arch\x86\kernel\time_32.c or time_64.c
   * do_timer_interrupt_hook() located on include/asm-i386/mach-default/do_timer.h
   * global_clock_event located on  linux/arch/i386/kernel/i8253.c  
+
+= Kernel Timer =
+
+ The kernel cannot ensure that timer functions will start right at their expiration times. It can only ensure that they are executed either at the proper time or after with a delay of up to a few hundreds of milliseconds. For this reason, timers are not appropriate for real-time applications.
+
+
+useful function:
+  * init_timer
+  * add_timer
+  * mod_timer
+  * del_timer
+
+= Delay Function =
+
+useful function:
+  * udelay
+  * ndelay
