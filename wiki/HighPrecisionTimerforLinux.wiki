@@ -11,6 +11,12 @@
 #define HZ 1000
 
 
-= HPET =
+= HPET (High Precision Event Timer) =
 
-  * frequency must be at leat 10MHz; therefore, the tick is at least 100 nanoseconds. 
+  * frequency must be at least 10MHz; therefore, the tick is at least 100 nanoseconds. 
+
+= Timer Interrupt Handler =
+
+  * timer_interrupt() located on arch\x86\kernel\time_32.c or time_64.c
+  * do_timer_interrupt_hook() located on include/asm-i386/mach-default/do_timer.h
+  * struct clock_event_device *global_clock_event located on  linux/arch/i386/kernel/i8253.c  
