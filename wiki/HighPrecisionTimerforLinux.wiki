@@ -19,4 +19,4 @@
 
   * timer_interrupt() located on arch\x86\kernel\time_32.c or time_64.c
   * do_timer_interrupt_hook() located on include/asm-i386/mach-default/do_timer.h
-  * struct clock_event_device *global_clock_event located on  linux/arch/i386/kernel/i8253.c  
+  * struct clock_event_device \*global_clock_event located on  linux/arch/i386/kernel/i8253.c  
