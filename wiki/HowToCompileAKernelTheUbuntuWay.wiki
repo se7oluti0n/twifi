@@ -1,4 +1,7 @@
-
 {{{
 5 Configure The Kernel
+
+cp /boot/config-`uname -r` ./.config
+make menuconfig
+
 }}}
