@@ -1,3 +1,5 @@
+[http://www.howtoforge.com/kernel_compilation_ubuntu]
+
 {{{
 1 Preliminary Note
 apt-get update
