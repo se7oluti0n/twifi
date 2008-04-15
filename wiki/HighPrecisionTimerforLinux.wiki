@@ -1,7 +1,12 @@
 #summary One-sentence summary of this page.
 
 = PIT (Programmable Interval Timer) =
+change the timer frequency to 1000HZ
 
+make menuconfig
+Processor type and features --> Timer frequency = 1000HZ
+
+I try the method as follow, but there are some problems
   * using an 8254 CMOS chip ath the 0x40-0x43 port
   * clock signal frequency is about 1000.15 Hz
   * default tick is roughly 10 milliseconds by setting the HZ 100. We can change it to 1000 in linux/include/asm-x86/param.h. So we can get a 1 milliseconds tick.
