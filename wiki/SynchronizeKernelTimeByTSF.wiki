@@ -1,6 +1,6 @@
 kernel version 2.6.24.4
 
-Patch to ark/x86/kernel/time_32.c
+Patch to arch/x86/kernel/time_32.c
 
 {{{
 150a151,161
