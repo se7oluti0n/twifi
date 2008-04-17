@@ -2546,6 +2546,55 @@ ath_ffstageq_flush(struct ath_softc *sc, struct ath_txq *txq,
 		sc->sc_stats.ast_tx_nobuf++;				\
 	}
 
+/////////////////////////////////////////////////////////////////////////////
+// Code for TDMA
+#define SLOT_SIZE 20	         // 2^20, 1024 * 1024us
+#define SLOT_NUMBER 32 
+#define SLOT_MASK 0x0000001f   // 5 bit mask, it is same as SLOT_NUMBER
+#define TIME_PER_PACKET 1266   // 1470Byte Packet, Tdifs 50us, Tplcp 96us, Tdata 1004us, Tsifs+ack 116us
+unsigned long g_slot_set[SLOT_NUMBER];
+
+int g_tx_num_per_slot = 0;
+int g_tx_num_current_slot = 0;
+int g_is_first = 1;
+int g_offset_time = 0;
+int g_init = 0;
+unsigned long g_dstIP_IO = 0;
+unsigned long g_dstIP = 0;
+struct ether_header *g_eh;
+
+// Hash Table operate
+void slot_set_init(unsigned long *slot_set)
+{
+  g_init = 1;
+  printk("Init slot set\n");
+  memset(slot_set, 0, SLOT_NUMBER * sizeof(unsigned long));
+}
+
+// key = [0, SLOT_NUMBER - 1]
+void slot_set_add(unsigned long *slot_set, int key, unsigned long dstIP)
+{
+  if(key >= SLOT_NUMBER || key < 0) 
+  {	  
+    printk("wrong slot number %d\n", key);
+    return;
+  }
+  printk("set slot %d; dstIP: %ld\n", key, dstIP);
+  slot_set[key] = dstIP;
+}
+
+int slot_set_check(unsigned long *slot_set, int key, unsigned long dstIP)
+{
+  return (slot_set[key] == dstIP);
+}
+
+// mod
+int mod(int v, int m)
+{
+  return v & m;
+}
+
+//---------------------------------------------------------------------------
 /*
  * Transmit a data packet.  On failure caller is
  * assumed to reclaim the resources.
@@ -2573,6 +2622,77 @@ ath_hardstart(struct sk_buff *skb, struct net_device *dev)
 	struct ath_txq *txq = NULL;
 	int ff_flush;
 #endif
+
+/////////////////////////////////////////////////////////////////////////////
+// Code for TDMA
+	struct ath_hal *ah = sc->sc_ah;
+	u_int64_t tsf;
+	u_int32_t tsf_h, tsf_l;
+	int if_index = 0;
+
+  if(!g_init)
+  {
+    int i = 0;
+    // slot_set_init(g_slot_set);
+    for(i = 0; i < SLOT_NUMBER; ++i)
+    {
+    //	slot_set_add(g_slot_set, i, g_dstIP);
+    }
+    // g_init = 1;
+  }
+	g_eh = (struct ether_header *) skb->data;
+	g_dstIP = *(unsigned long*)(skb->data + 14 + 16);
+	//g_tx_num_per_slot = ((1 << SLOT_SIZE) - g_offset_time ) / ( (1470 + 34) * 8 / 12 + 120 );
+	g_tx_num_per_slot = 500; //((1 << SLOT_SIZE) - g_offset_time ) / ( (1470 + 34) * 8 / 12 + 120 );
+
+	tsf = ath_hal_gettsf64(ah);
+	tsf_h = (u_int32_t)(tsf >> 32);
+	tsf_l = (u_int32_t)tsf;
+  
+	if_index = dev->name[4] - '0';
+  if(if_index == 1 && g_init)
+  {
+  	if( slot_set_check(g_slot_set, mod(tsf_l >> SLOT_SIZE, SLOT_MASK), g_dstIP )
+     && slot_set_check(g_slot_set, mod((tsf_l + TIME_PER_PACKET) >> SLOT_SIZE, SLOT_MASK), g_dstIP )
+  	 && (g_tx_num_current_slot < g_tx_num_per_slot)
+	    ) 
+    {
+  		if(g_is_first)
+  		{
+			printk("dstIP : %ld, %d \n", g_dstIP, tsf_l);
+  			g_offset_time = tsf_l & (0x000fffff);
+  			g_is_first = 0;
+  		}
+    }
+    else
+    {
+	    /*
+	    static int flag = 0;
+	    if(0)//(flag++ % 1000 == 0)
+	    {
+		int i = 0;
+		
+		printk("dstIP : %ld \n", g_dstIP);
+		for(i = 0; i < 6; i++)
+		{
+		    printk("%d", g_eh->ether_dhost[i]);
+		}
+		printk("\n");
+	    }
+	    */
+			//printk("tx pkt num per slot : %d \n", g_tx_num_per_slot);
+			//printk("tx pkt num cur slot : %d \n", g_tx_num_current_slot);
+ 			g_is_first = 1;
+      g_tx_num_current_slot = 0;
+			g_offset_time = 0;
+     		//if(!slot_set_check(g_slot_set, mod((tsf_l + TIME_PER_PACKET) >> SLOT_SIZE, SLOT_MASK) ))
+		{
+  	 		return NETDEV_TX_BUSY;
+		}
+    }
+  }
+
+//---------------------------------------------------------------------------
 
 	if ((dev->flags & IFF_RUNNING) == 0 || sc->sc_invalid) {
 		DPRINTF(sc, ATH_DEBUG_XMIT,
@@ -2827,6 +2947,11 @@ ff_bypass:
 	if (txq && ic->ic_opmode == IEEE80211_M_HOSTAP)
 		ath_ffstageq_flush(sc, txq, ath_ff_ageflushtestdone);
 #endif
+
+/////////////////////////////////////////////////////////////////////////////
+// Code for TDMA
+	g_tx_num_current_slot++;
+//---------------------------------------------------------------------------
 
 	return NETDEV_TX_OK;
 
@@ -6325,6 +6450,9 @@ ath_txq_setup(struct ath_softc *sc, int qtype, int subtype)
 		qi.tqi_qflags = HAL_TXQ_TXDESCINT_ENABLE;
 	else
 		qi.tqi_qflags = HAL_TXQ_TXEOLINT_ENABLE | HAL_TXQ_TXDESCINT_ENABLE;
+
+	qi.tqi_qflags |= HAL_TXQ_BACKOFF_DISABLE;
+
 	qnum = ath_hal_setuptxqueue(ah, qtype, &qi);
 	if (qnum == -1) {
 		/*
@@ -9354,6 +9482,9 @@ enum {
 	ATH_ACKRATE		= 22,
 	ATH_INTMIT		= 23,
 	ATH_MAXVAPS		= 26,
+	ATH_INIT_SLOT	= 27,
+	ATH_SET_SLOT	= 28,
+	ATH_DST_IP		= 29,
 };
 
 static int
@@ -9491,6 +9622,15 @@ ATH_SYSCTL_DECL(ath_sysctl_halparam, ctl, write, filp, buffer, lenp, ppos)
 				    !sc->sc_invalid)
 					ath_reset(sc->sc_dev);
 				break;
+			case ATH_INIT_SLOT:
+    				slot_set_init(g_slot_set);
+				break;
+			case ATH_SET_SLOT:
+    				slot_set_add(g_slot_set, val, g_dstIP_IO);
+				break;
+			case ATH_DST_IP:
+    				g_dstIP_IO = val;
+				break;
 			default:
 				return -EINVAL;
 			}
@@ -9555,6 +9695,12 @@ ATH_SYSCTL_DECL(ath_sysctl_halparam, ctl, write, filp, buffer, lenp, ppos)
 			break;
 		case ATH_INTMIT:
 			val = sc->sc_useintmit;
+			break;
+		case ATH_INIT_SLOT:
+			break;
+		case ATH_SET_SLOT:
+			break;
+		case ATH_DST_IP:
 			break;
 		default:
 			return -EINVAL;
@@ -9685,6 +9831,24 @@ static const ctl_table ath_sysctl_template[] = {
 	  .mode		= 0644,
 	  .proc_handler	= ath_sysctl_halparam,
 	  .extra2	= (void *)ATH_INTMIT,
+	},
+	{ .ctl_name	= CTL_AUTO,
+	  .procname	= "initslot",
+	  .mode		= 0644,
+	  .proc_handler	= ath_sysctl_halparam
+	  .extra2	= (void *)ATH_INIT_SLOT,
+	},
+	{ .ctl_name	= CTL_AUTO,
+	  .procname	= "setslot",
+	  .mode		= 0644,
+	  .proc_handler	= ath_sysctl_halparam
+	  .extra2	= (void *)ATH_SET_SLOT,
+	},
+	{ .ctl_name	= CTL_AUTO,
+	  .procname	= "dstip",
+	  .mode		= 0644,
+	  .proc_handler	= ath_sysctl_halparam
+	  .extra2	= (void *)ATH_DST_IP,
 	},
 	{ 0 }
 };
