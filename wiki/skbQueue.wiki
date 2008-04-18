@@ -1,3 +1,5 @@
+alloc_skb has a memory limitation
+ 
 {{{
 struct sk_buff_head frame_queue;
 
