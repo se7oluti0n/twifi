@@ -1,4 +1,4 @@
-/*-
+/*_ 
  * Copyright (c) 2002-2005 Sam Leffler, Errno Consulting
  * All rights reserved.
  *
@@ -2563,12 +2563,16 @@ unsigned long g_dstIP_IO = 0;
 unsigned long g_dstIP = 0;
 struct ether_header *g_eh;
 
+void link_queue_init(void);
+struct sk_buff_head * link_queue_add(u32 dstIP);
+
 // Hash Table operate
 void slot_set_init(unsigned long *slot_set)
 {
   g_init = 1;
   printk("Init slot set\n");
   memset(slot_set, 0, SLOT_NUMBER * sizeof(unsigned long));
+  link_queue_init();
 }
 
 // key = [0, SLOT_NUMBER - 1]
@@ -2581,6 +2585,12 @@ void slot_set_add(unsigned long *slot_set, int key, unsigned long dstIP)
   }
   printk("set slot %d; dstIP: %ld\n", key, dstIP);
   slot_set[key] = dstIP;
+  link_queue_add(dstIP);
+}
+
+u32 slot_set_get(unsigned long *slot_set, int key)
+{
+  return slot_set[key];
 }
 
 int slot_set_check(unsigned long *slot_set, int key, unsigned long dstIP)
@@ -2594,6 +2604,187 @@ int mod(int v, int m)
   return v & m;
 }
 
+// queue per link
+struct sk_buff_head frame_queues[SLOT_NUMBER];
+u32 ip_queues[SLOT_NUMBER];
+int queue_number;
+int i = 0;
+#define QUEUE_SIZE 6
+
+void link_queue_init(void)
+{
+	for (i = 0; i < SLOT_NUMBER; ++i)
+	{
+		skb_queue_head_init(&frame_queues[i]);
+	}
+  	memset(ip_queues, 0, SLOT_NUMBER * sizeof(unsigned long));
+	queue_number = 0;
+}
+
+struct sk_buff_head * link_queue_find(u32 dstIP)
+{
+	for (i = 0; i < queue_number; ++i) {
+		if(ip_queues[i] == dstIP) {
+			return&frame_queues[i];
+		}
+	}
+	return NULL;
+}
+struct sk_buff_head * link_queue_add(u32 dstIP)
+{
+	struct sk_buff_head * pHead = NULL;
+
+	if(queue_number >= SLOT_NUMBER)
+		return NULL;
+	
+	pHead = link_queue_find(dstIP);
+	if(pHead == NULL) {
+		pHead = &frame_queues[queue_number];
+		ip_queues[queue_number++] = dstIP;
+	}
+	printk(KERN_INFO "queue number %d\n", queue_number);	
+	return pHead;
+}
+
+struct sk_buff * link_queue_dequeue(u32 dstIP)
+{
+	struct sk_buff_head * pHead = NULL;
+	struct sk_buff * skb = NULL;
+
+	pHead = link_queue_find(dstIP);
+	if(pHead == NULL) 
+		return skb;
+
+	spin_lock(&pHead->lock);
+	skb = skb_dequeue(pHead);
+	spin_unlock(&pHead->lock);
+
+	return skb;
+}
+int link_queue_enqueue(u32 dstIP, struct sk_buff *skb)
+{
+	struct sk_buff_head * pHead = NULL;
+
+	pHead = link_queue_find(dstIP);
+	if(pHead == NULL || pHead->qlen >= QUEUE_SIZE) 
+		return -1;
+
+	spin_lock(&pHead->lock);
+	skb_queue_tail(pHead, skb);
+	spin_unlock(&pHead->lock);
+
+	return 0;
+}
+static int __ath_hardstart(struct sk_buff *skb, struct net_device *dev);
+
+static int
+ath_hardstart(struct sk_buff *skb, struct net_device *dev)
+{
+/////////////////////////////////////////////////////////////////////////////
+// Code for TDMA
+	struct ath_softc *sc = dev->priv;
+	struct ath_hal *ah = sc->sc_ah;
+	u_int64_t tsf;
+	u_int32_t tsf_h, tsf_l;
+	int if_index = 0;
+
+	if_index = dev->name[4] - '0';
+	// printk(KERN_INFO "if %d\n", if_index);
+  	if(if_index == 1 && g_init)
+  	{
+		int ret_status = NETDEV_TX_OK;
+		int tx_count = 0;
+		
+		g_eh = (struct ether_header *) skb->data;
+		g_dstIP = *(unsigned long*)(skb->data + 14 + 16);
+		//g_tx_num_per_slot = ((1 << SLOT_SIZE) - g_offset_time ) / ( (1470 + 34) * 8 / 12 + 120 );
+		g_tx_num_per_slot = 500; //((1 << SLOT_SIZE) - g_offset_time ) / ( (1470 + 34) * 8 / 12 + 120 );
+
+		// buffer skb
+		if (link_queue_enqueue(g_dstIP, skb) == -1) {
+			printk(KERN_INFO "Busy\n");
+			ret_status = NETDEV_TX_BUSY;
+		}
+
+		// printk(KERN_INFO "Start\n");
+		while(1) {
+			int slot = 0;
+			static int flag = 0;
+			
+			tsf = ath_hal_gettsf64(ah);
+			tsf_h = (u_int32_t)(tsf >> 32);
+			tsf_l = (u_int32_t)tsf;
+		
+			slot = mod(tsf_l >> SLOT_SIZE, SLOT_MASK);
+			g_dstIP = slot_set_get(g_slot_set, slot);
+			skb = link_queue_dequeue(g_dstIP);
+			if(skb == NULL) {
+				if (g_dstIP == 0 && flag == 1) {
+					flag = 0;
+				printk(KERN_INFO "dequeue from %x\n", (u32)g_dstIP);
+				printk(KERN_INFO "Slot %d\n", slot);
+				printk(KERN_INFO "Stop\n");
+				printk(KERN_INFO "tx count %d\n", tx_count);
+				} else if (g_dstIP != 0 && flag == 0) {
+					flag = 1;
+				printk(KERN_INFO "queue len %d\n", frame_queues[0].qlen);
+				printk(KERN_INFO "dequeue from %x\n", (u32)g_dstIP);
+				printk(KERN_INFO "Slot %d\n", slot);
+				printk(KERN_INFO "Stop\n");
+				printk(KERN_INFO "tx count %d\n", tx_count);
+				}
+				return ret_status;
+			}
+			if (__ath_hardstart(skb, dev) != NETDEV_TX_OK) {
+				printk(KERN_INFO "Tx failed\n");
+			}
+			tx_count++;
+		}
+		return ret_status;
+	} else {
+		return __ath_hardstart(skb, dev);
+	}
+	    /*
+  	if( slot_set_check(g_slot_set, mod(tsf_l >> SLOT_SIZE, SLOT_MASK), g_dstIP )
+     && slot_set_check(g_slot_set, mod((tsf_l + TIME_PER_PACKET) >> SLOT_SIZE, SLOT_MASK), g_dstIP )
+  	 && (g_tx_num_current_slot < g_tx_num_per_slot)
+	    ) 
+    {
+  		if(g_is_first)
+  		{
+			printk("dstIP : %ld, %d \n", g_dstIP, tsf_l);
+  			g_offset_time = tsf_l & (0x000fffff);
+  			g_is_first = 0;
+  		}
+    }
+    else
+    {
+	    static int flag = 0;
+	    if(0)//(flag++ % 1000 == 0)
+	    {
+		int i = 0;
+		
+		printk("dstIP : %ld \n", g_dstIP);
+		for(i = 0; i < 6; i++)
+		{
+		    printk("%d", g_eh->ether_dhost[i]);
+		}
+		printk("\n");
+	    }
+			//printk("tx pkt num per slot : %d \n", g_tx_num_per_slot);
+			//printk("tx pkt num cur slot : %d \n", g_tx_num_current_slot);
+ 			g_is_first = 1;
+      g_tx_num_current_slot = 0;
+			g_offset_time = 0;
+     		//if(!slot_set_check(g_slot_set, mod((tsf_l + TIME_PER_PACKET) >> SLOT_SIZE, SLOT_MASK) ))
+		{
+  	 		return NETDEV_TX_BUSY;
+		}
+    }
+	    */
+
+//---------------------------------------------------------------------------
+}
 //---------------------------------------------------------------------------
 /*
  * Transmit a data packet.  On failure caller is
@@ -2602,7 +2793,7 @@ int mod(int v, int m)
  * Context: process context with BH's disabled
  */
 static int
-ath_hardstart(struct sk_buff *skb, struct net_device *dev)
+__ath_hardstart(struct sk_buff *skb, struct net_device *dev)
 {
 	struct ath_softc *sc = dev->priv;
 	struct ieee80211_node *ni = NULL;
@@ -2623,76 +2814,6 @@ ath_hardstart(struct sk_buff *skb, struct net_device *dev)
 	int ff_flush;
 #endif
 
-/////////////////////////////////////////////////////////////////////////////
-// Code for TDMA
-	struct ath_hal *ah = sc->sc_ah;
-	u_int64_t tsf;
-	u_int32_t tsf_h, tsf_l;
-	int if_index = 0;
-
-  if(!g_init)
-  {
-    int i = 0;
-    // slot_set_init(g_slot_set);
-    for(i = 0; i < SLOT_NUMBER; ++i)
-    {
-    //	slot_set_add(g_slot_set, i, g_dstIP);
-    }
-    // g_init = 1;
-  }
-	g_eh = (struct ether_header *) skb->data;
-	g_dstIP = *(unsigned long*)(skb->data + 14 + 16);
-	//g_tx_num_per_slot = ((1 << SLOT_SIZE) - g_offset_time ) / ( (1470 + 34) * 8 / 12 + 120 );
-	g_tx_num_per_slot = 500; //((1 << SLOT_SIZE) - g_offset_time ) / ( (1470 + 34) * 8 / 12 + 120 );
-
-	tsf = ath_hal_gettsf64(ah);
-	tsf_h = (u_int32_t)(tsf >> 32);
-	tsf_l = (u_int32_t)tsf;
-  
-	if_index = dev->name[4] - '0';
-  if(if_index == 1 && g_init)
-  {
-  	if( slot_set_check(g_slot_set, mod(tsf_l >> SLOT_SIZE, SLOT_MASK), g_dstIP )
-     && slot_set_check(g_slot_set, mod((tsf_l + TIME_PER_PACKET) >> SLOT_SIZE, SLOT_MASK), g_dstIP )
-  	 && (g_tx_num_current_slot < g_tx_num_per_slot)
-	    ) 
-    {
-  		if(g_is_first)
-  		{
-			printk("dstIP : %ld, %d \n", g_dstIP, tsf_l);
-  			g_offset_time = tsf_l & (0x000fffff);
-  			g_is_first = 0;
-  		}
-    }
-    else
-    {
-	    /*
-	    static int flag = 0;
-	    if(0)//(flag++ % 1000 == 0)
-	    {
-		int i = 0;
-		
-		printk("dstIP : %ld \n", g_dstIP);
-		for(i = 0; i < 6; i++)
-		{
-		    printk("%d", g_eh->ether_dhost[i]);
-		}
-		printk("\n");
-	    }
-	    */
-			//printk("tx pkt num per slot : %d \n", g_tx_num_per_slot);
-			//printk("tx pkt num cur slot : %d \n", g_tx_num_current_slot);
- 			g_is_first = 1;
-      g_tx_num_current_slot = 0;
-			g_offset_time = 0;
-     		//if(!slot_set_check(g_slot_set, mod((tsf_l + TIME_PER_PACKET) >> SLOT_SIZE, SLOT_MASK) ))
-		{
-  	 		return NETDEV_TX_BUSY;
-		}
-    }
-  }
-
-//---------------------------------------------------------------------------
 
 	if ((dev->flags & IFF_RUNNING) == 0 || sc->sc_invalid) {
 		DPRINTF(sc, ATH_DEBUG_XMIT,
@@ -2950,7 +3071,7 @@ ff_bypass:
 
 /////////////////////////////////////////////////////////////////////////////
 // Code for TDMA
-	g_tx_num_current_slot++;
+//	g_tx_num_current_slot++;
 //---------------------------------------------------------------------------
 
 	return NETDEV_TX_OK;
@@ -2971,8 +3092,9 @@ hardstart_fail:
 	}
 	
 	/* let the kernel requeue the skb (don't free it!) */
-	if (requeue)
-		return NETDEV_TX_BUSY;
+	/* for TDMA there is not requeue again */
+	// if (requeue)
+	//	return ret_status;
 
 	/* free sk_buffs */
 	while (skb) {
@@ -9835,19 +9957,19 @@ static const ctl_table ath_sysctl_template[] = {
 	{ .ctl_name	= CTL_AUTO,
 	  .procname	= "initslot",
 	  .mode		= 0644,
-	  .proc_handler	= ath_sysctl_halparam
+	  .proc_handler	= ath_sysctl_halparam,
 	  .extra2	= (void *)ATH_INIT_SLOT,
 	},
 	{ .ctl_name	= CTL_AUTO,
 	  .procname	= "setslot",
 	  .mode		= 0644,
-	  .proc_handler	= ath_sysctl_halparam
+	  .proc_handler	= ath_sysctl_halparam,
 	  .extra2	= (void *)ATH_SET_SLOT,
 	},
 	{ .ctl_name	= CTL_AUTO,
 	  .procname	= "dstip",
 	  .mode		= 0644,
-	  .proc_handler	= ath_sysctl_halparam
+	  .proc_handler	= ath_sysctl_halparam,
 	  .extra2	= (void *)ATH_DST_IP,
 	},
 	{ 0 }
