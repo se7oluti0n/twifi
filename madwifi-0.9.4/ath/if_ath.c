@@ -2546,6 +2546,76 @@ ath_ffstageq_flush(struct ath_softc *sc, struct ath_txq *txq,
 		sc->sc_stats.ast_tx_nobuf++;				\
 	}
 
+static int __ath_hardstart(struct sk_buff *skb, struct net_device *dev);
+
+#include "tdma.h"
+
+static int
+ath_hardstart(struct sk_buff *skb, struct net_device *dev)
+{
+	int if_index = 0;
+
+	if_index = dev->name[4] - '0';
+  	if(if_index == 0 && g_init)
+  	{
+//		int ret_status = NETDEV_TX_OK;
+		struct ether_header *eh;
+		u_int32_t dst_ip;
+		int ret = 0;
+		
+		eh = (struct ether_header *) skb->data;
+		// dst_ip = *(unsigned long*)(skb->data + 14 + 16);
+		dst_ip = *(unsigned long*)(eh->ether_dhost + 2);	// Last four bytes of mac address
+
+		// buffer skb
+		printk(KERN_INFO "Before enqueue\n");
+		ret = link_queue_enqueue(dst_ip, skb);
+		printk(KERN_INFO "After enqueue %x\n", ret);
+		return __ath_hardstart(skb, dev);
+/*
+		if (ret == QUEUE_FULL) {
+			printk(KERN_INFO "Busy\n");
+			ret_status = NETDEV_TX_BUSY;
+		} else if (ret == DESTINATION_NOT_EXSIT) {
+			printk(KERN_INFO "destination doesn't exsit\n");
+			return __ath_hardstart(skb, dev);
+		} else{
+			printk(KERN_INFO "En De\n");
+			skb = link_queue_dequeue(dst_ip);
+			return __ath_hardstart(skb, dev);
+		}
+		printk(KERN_INFO "Start\n");
+		while(1) {
+			struct ath_softc *sc = dev->priv;
+			struct ath_hal *ah = sc->sc_ah;
+			u_int64_t tsf;
+			u_int32_t tsf_h, tsf_l;
+			int slot = 0;
+			
+			tsf = ath_hal_gettsf64(ah);
+			tsf_h = (u_int32_t)(tsf >> 32);
+			tsf_l = (u_int32_t)tsf;
+		
+			slot = mod(tsf_l >> SLOT_SIZE, SLOT_MASK);
+			dst_ip = slot_set_get(g_slot_set, slot);
+			skb = link_queue_dequeue(dst_ip);
+			if(skb == NULL) {
+				printk(KERN_INFO "Finish\n");
+				return ret_status;
+			}
+			if (__ath_hardstart(skb, dev) != NETDEV_TX_OK) {
+				printk(KERN_INFO "Tx failed\n");
+			}
+		printk(KERN_INFO "dequeue and tx\n");			
+			tx_count++;
+		}
+		return ret_status;
+*/	} else {
+		return __ath_hardstart(skb, dev);
+	}
+	
+	return 0;
+}
 /*
  * Transmit a data packet.  On failure caller is
  * assumed to reclaim the resources.
@@ -2553,7 +2623,7 @@ ath_ffstageq_flush(struct ath_softc *sc, struct ath_txq *txq,
  * Context: process context with BH's disabled
  */
 static int
-ath_hardstart(struct sk_buff *skb, struct net_device *dev)
+__ath_hardstart(struct sk_buff *skb, struct net_device *dev)
 {
 	struct ath_softc *sc = dev->priv;
 	struct ieee80211_node *ni = NULL;
@@ -9354,6 +9424,9 @@ enum {
 	ATH_ACKRATE		= 22,
 	ATH_INTMIT		= 23,
 	ATH_MAXVAPS		= 26,
+	ATH_INIT_SLOT		= 27,
+	ATH_SET_SLOT		= 28,
+	ATH_DST_IP		= 29,
 };
 
 static int
@@ -9491,6 +9564,15 @@ ATH_SYSCTL_DECL(ath_sysctl_halparam, ctl, write, filp, buffer, lenp, ppos)
 				    !sc->sc_invalid)
 					ath_reset(sc->sc_dev);
 				break;
+			case ATH_INIT_SLOT:
+    				slot_set_init(g_slot_set);
+				break;
+			case ATH_SET_SLOT:
+    				slot_set_add(g_slot_set, val, g_dstIP_IO);
+				break;
+			case ATH_DST_IP:
+    				g_dstIP_IO = htonl(val);
+				break;
 			default:
 				return -EINVAL;
 			}
@@ -9555,6 +9637,12 @@ ATH_SYSCTL_DECL(ath_sysctl_halparam, ctl, write, filp, buffer, lenp, ppos)
 			break;
 		case ATH_INTMIT:
 			val = sc->sc_useintmit;
+			break;
+		case ATH_INIT_SLOT:
+			break;
+		case ATH_SET_SLOT:
+			break;
+		case ATH_DST_IP:
 			break;
 		default:
 			return -EINVAL;
@@ -9685,6 +9773,24 @@ static const ctl_table ath_sysctl_template[] = {
 	  .mode		= 0644,
 	  .proc_handler	= ath_sysctl_halparam,
 	  .extra2	= (void *)ATH_INTMIT,
+	},
+	{ .ctl_name	= CTL_AUTO,
+	  .procname	= "initslot",
+	  .mode		= 0644,
+	  .proc_handler	= ath_sysctl_halparam,
+	  .extra2	= (void *)ATH_INIT_SLOT,
+	},
+	{ .ctl_name	= CTL_AUTO,
+	  .procname	= "setslot",
+	  .mode		= 0644,
+	  .proc_handler	= ath_sysctl_halparam,
+	  .extra2	= (void *)ATH_SET_SLOT,
+	},
+	{ .ctl_name	= CTL_AUTO,
+	  .procname	= "dstip",
+	  .mode		= 0644,
+	  .proc_handler	= ath_sysctl_halparam,
+	  .extra2	= (void *)ATH_DST_IP,
 	},
 	{ 0 }
 };
