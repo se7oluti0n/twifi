@@ -46,7 +46,7 @@ void slot_set_add(unsigned long *slot_set, int key, unsigned int dstIP)
     printk("wrong slot number %d\n", key);
     return;
   }
-  printk("set slot %x; dstIP: %x\n", key, dstIP);
+//  printk("set slot %x; dstIP: %x\n", key, dstIP);
   slot_set[key] = dstIP;
   link_queue_add(dstIP);
 }
@@ -82,7 +82,7 @@ void link_queue_init(void)
 	printk("%s : %d\n", __func__, SLOT_NUMBER);
 	for (i = 0; i < SLOT_NUMBER; ++i)
 	{
-		skb_queue_head_init(&frame_queues[i]);
+		skb_queue_head_init(&(frame_queues[i]));
 	}
   	memset(ip_queues, 0, SLOT_NUMBER * sizeof(unsigned long));
 	queue_number = 0;
@@ -92,9 +92,9 @@ struct sk_buff_head * link_queue_find(u32 dstIP)
 {
 	int i = 0;
 	for (i = 0; i < queue_number; ++i) {
-		printk(KERN_INFO "%x : %x\n", ip_queues[i], dstIP);
+//		printk(KERN_INFO "%x : %x\n", ip_queues[i], dstIP);
 		if(ip_queues[i] == dstIP) {
-			return&frame_queues[i];
+			return &(frame_queues[i]);
 		}
 	}
 	return NULL;
@@ -108,7 +108,7 @@ struct sk_buff_head * link_queue_add(u32 dstIP)
 	
 	pHead = link_queue_find(dstIP);
 	if(pHead == NULL) {
-		pHead = &frame_queues[queue_number];
+		pHead = &(frame_queues[queue_number]);
 		ip_queues[queue_number++] = dstIP;
 	}
 	printk(KERN_INFO "queue number %d\n", queue_number);	
@@ -137,7 +137,7 @@ int link_queue_enqueue(u32 dstIP, struct sk_buff *skb)
 	pHead = link_queue_find(dstIP);
 	if(pHead == NULL) 
 		return DESTINATION_NOT_EXSIT;
-	if(pHead->qlen >= QUEUE_SIZE) 
+	if(skb_queue_len(pHead) >= QUEUE_SIZE) 
 		return QUEUE_FULL;
 
 //	spin_lock(&pHead->lock);

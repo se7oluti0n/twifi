@@ -2550,6 +2550,37 @@ static int __ath_hardstart(struct sk_buff *skb, struct net_device *dev);
 
 #include "tdma.h"
 
+void scheduling_frames(struct net_device *dev)
+{
+	while(1) {
+		struct ath_softc *sc = dev->priv;
+		struct ath_hal *ah = sc->sc_ah;
+		u_int64_t tsf;
+		u_int32_t tsf_h, tsf_l;
+		int slot = 0;
+		u_int32_t dst_ip;
+		struct sk_buff *skb;
+	
+//		printk("%s : %d\n", __func__, sc->sc_txq[1].axq_depth);
+		if(sc->sc_txq[1].axq_depth > 3) {
+			break;
+		}
+		tsf = ath_hal_gettsf64(ah);
+		tsf_h = (u_int32_t)(tsf >> 32);
+		tsf_l = (u_int32_t)tsf;
+
+		slot = mod(tsf_l >> SLOT_SIZE, SLOT_MASK);
+		dst_ip = slot_set_get(g_slot_set, slot);
+		skb = link_queue_dequeue(dst_ip);
+		if(skb == NULL) {
+			return;
+		}
+		if (__ath_hardstart(skb, dev) != NETDEV_TX_OK) {
+			printk(KERN_INFO "Tx failed\n");
+		}
+	}
+}
+
 static int
 ath_hardstart(struct sk_buff *skb, struct net_device *dev)
 {
@@ -2558,59 +2589,28 @@ ath_hardstart(struct sk_buff *skb, struct net_device *dev)
 	if_index = dev->name[4] - '0';
   	if(if_index == 0 && g_init)
   	{
-//		int ret_status = NETDEV_TX_OK;
+		int ret_status = NETDEV_TX_OK;
 		struct ether_header *eh;
 		u_int32_t dst_ip;
 		int ret = 0;
 		
-		eh = (struct ether_header *) skb->data;
-		// dst_ip = *(unsigned long*)(skb->data + 14 + 16);
-		dst_ip = *(unsigned long*)(eh->ether_dhost + 2);	// Last four bytes of mac address
+		if(skb != NULL) {
+			eh = (struct ether_header *) skb->data;
+			// dst_ip = *(unsigned long*)(skb->data + 14 + 16);
+			dst_ip = *(unsigned long*)(eh->ether_dhost + 2);	// Last four bytes of mac address
 
-		// buffer skb
-		printk(KERN_INFO "Before enqueue\n");
-		ret = link_queue_enqueue(dst_ip, skb);
-		printk(KERN_INFO "After enqueue %x\n", ret);
-		return __ath_hardstart(skb, dev);
-/*
-		if (ret == QUEUE_FULL) {
-			printk(KERN_INFO "Busy\n");
-			ret_status = NETDEV_TX_BUSY;
-		} else if (ret == DESTINATION_NOT_EXSIT) {
-			printk(KERN_INFO "destination doesn't exsit\n");
-			return __ath_hardstart(skb, dev);
-		} else{
-			printk(KERN_INFO "En De\n");
-			skb = link_queue_dequeue(dst_ip);
-			return __ath_hardstart(skb, dev);
+			// buffer skb
+			ret = link_queue_enqueue(dst_ip, skb);
+			if (ret == QUEUE_FULL) {
+				ret_status = NETDEV_TX_BUSY;
+			} else if (ret == DESTINATION_NOT_EXSIT) {
+				return __ath_hardstart(skb, dev);
+			} 
 		}
-		printk(KERN_INFO "Start\n");
-		while(1) {
-			struct ath_softc *sc = dev->priv;
-			struct ath_hal *ah = sc->sc_ah;
-			u_int64_t tsf;
-			u_int32_t tsf_h, tsf_l;
-			int slot = 0;
-			
-			tsf = ath_hal_gettsf64(ah);
-			tsf_h = (u_int32_t)(tsf >> 32);
-			tsf_l = (u_int32_t)tsf;
-		
-			slot = mod(tsf_l >> SLOT_SIZE, SLOT_MASK);
-			dst_ip = slot_set_get(g_slot_set, slot);
-			skb = link_queue_dequeue(dst_ip);
-			if(skb == NULL) {
-				printk(KERN_INFO "Finish\n");
-				return ret_status;
-			}
-			if (__ath_hardstart(skb, dev) != NETDEV_TX_OK) {
-				printk(KERN_INFO "Tx failed\n");
-			}
-		printk(KERN_INFO "dequeue and tx\n");			
-			tx_count++;
-		}
+
+		scheduling_frames(dev);
 		return ret_status;
-*/	} else {
+	} else {
 		return __ath_hardstart(skb, dev);
 	}
 	
@@ -2916,8 +2916,8 @@ hardstart_fail:
 	}
 	
 	/* let the kernel requeue the skb (don't free it!) */
-	if (requeue)
-		return NETDEV_TX_BUSY;
+//	if (requeue)
+//		return NETDEV_TX_BUSY;
 
 	/* free sk_buffs */
 	while (skb) {
@@ -5924,6 +5924,9 @@ rx_next:
 		ATH_RXBUF_UNLOCK_IRQ(sc);
 	} while (ath_rxbuf_init(sc, bf) == 0);
 	
+	if(dev->name[4] - '0' == 0)
+		scheduling_frames(dev);
+		
 	/* rx signal state monitoring */
 	ath_hal_rxmonitor(ah, &sc->sc_halstats, &sc->sc_curchan);
 	if (ath_hal_radar_event(ah)) {
